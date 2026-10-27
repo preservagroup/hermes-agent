@@ -608,10 +608,14 @@ def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
 
 
 def _usage_windows(
-    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *, fraction: bool = False,
+    source: dict, mapping: tuple[tuple[str, str], ...], used_key: str, reset_key: str, *,
     model_scoped: frozenset[str] | set[str] = frozenset(),
 ) -> list[AccountUsageWindow]:
-    """Build windows from ``source[key][used_key]``; ``fraction`` scales values <= 1 to percent.
+    """Build windows from ``source[key][used_key]``, whose value is already a 0-100 percent.
+
+    Every usage endpoint we read (Codex ``used_percent``, Anthropic ``utilization``) publishes
+    percent, so the value is passed through unchanged — never rescaled by magnitude (#73901:
+    an honest ``utilization: 1.0`` = 1% used rendered as 100% used).
     ``model_scoped`` keys build windows that cap only a model family, never the account."""
     windows: list[AccountUsageWindow] = []
     for key, label in mapping:
@@ -620,8 +624,6 @@ def _usage_windows(
         if used is None:
             continue
         used = float(used)
-        if fraction and used <= 1:
-            used *= 100
         windows.append(AccountUsageWindow(
             label=label, used_percent=used, reset_at=_parse_dt(window.get(reset_key)),
             scope="model" if key in model_scoped else "account",
@@ -858,9 +860,11 @@ def _fetch_anthropic_account_usage(
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "application/json",
                "anthropic-beta": "oauth-2025-04-20", "User-Agent": "claude-code/2.1.0"}
     payload = _get_json("https://api.anthropic.com/api/oauth/usage", headers, timeout=15.0)
+    # ``utilization`` is already 0-100 percent on this endpoint (a Pro account's 1% week reads
+    # ``1.0``), so it passes through unscaled — see _usage_windows.
     windows = _usage_windows(
         payload, (("five_hour", "Current session"), ("seven_day", "Current week"), ("seven_day_opus", "Opus week"),
-                  ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at", fraction=True,
+                  ("seven_day_sonnet", "Sonnet week")), "utilization", "resets_at",
         model_scoped={"seven_day_opus", "seven_day_sonnet"},
     )
     details: list[str] = []
